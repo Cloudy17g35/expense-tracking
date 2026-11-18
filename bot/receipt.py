@@ -18,6 +18,14 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Modele z serwerowym fallbackiem przy odmowie (Haiku go nie ma).
+FALLBACK_MODEL_PREFIXES = ("claude-opus-5", "claude-fable-5", "claude-sonnet-5-5")
+
+
+def supports_fallback(model: str) -> bool:
+    return model.startswith(FALLBACK_MODEL_PREFIXES)
+
+
 OTHER = 7
 
 ImageType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
@@ -134,6 +142,7 @@ class ClaudeReceiptReader:
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         self._client = anthropic.Anthropic(api_key=api_key, max_retries=3)
         self._model = model
+        self._fallback = supports_fallback(model)
 
     def read(self, image: bytes, media_type: str) -> Receipt | None:
         message: BetaUserMessageParam = {
@@ -154,8 +163,8 @@ class ClaudeReceiptReader:
             response = self._client.beta.messages.parse(
                 model=self._model,
                 max_tokens=16000,
-                betas=[FALLBACK_BETA],
-                fallbacks="default",
+                betas=[FALLBACK_BETA] if self._fallback else anthropic.omit,
+                fallbacks="default" if self._fallback else anthropic.omit,
                 output_config={"effort": "low"},
                 system=SYSTEM_PROMPT,
                 messages=[message],

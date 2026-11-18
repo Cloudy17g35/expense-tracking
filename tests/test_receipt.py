@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from bot.receipt import SYSTEM_PROMPT, _ReceiptOutput, _Split, normalize
+from bot.receipt import SYSTEM_PROMPT, _ReceiptOutput, _Split, normalize, supports_fallback
 
 
 def output(**overrides: object) -> _ReceiptOutput:
@@ -77,3 +77,9 @@ def test_bad_date_is_dropped() -> None:
 def test_prompt_lists_all_categories() -> None:
     for number in range(1, 8):
         assert f"\n{number}. " in SYSTEM_PROMPT
+
+
+def test_fallback_only_for_supported_models() -> None:
+    assert supports_fallback("claude-opus-5-5")
+    assert supports_fallback("claude-sonnet-5-5")
+    assert not supports_fallback("claude-haiku-5-5")
