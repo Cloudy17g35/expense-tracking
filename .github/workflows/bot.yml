@@ -2,8 +2,10 @@ name: Bot
 
 on:
   schedule:
-    # Co 5 minut (GitHub w praktyce potrafi opóźnić uruchomienie o kilka-kilkanaście minut).
-    - cron: "*/5 * * * *"
+    # Co 5 minut, z przesunięciem od pełnych godzin (:02, :07, ...), bo na początku każdej
+    # godziny GitHub jest najbardziej obciążony i najczęściej opóźnia lub pomija crony.
+    # Opóźnienia kilku-kilkunastu minut są normalne.
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 permissions:
