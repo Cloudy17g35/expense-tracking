@@ -47,6 +47,8 @@ def run(ctx: Context) -> Counter[str]:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # httpx loguje pełne adresy, a te zawierają token bota (api.telegram.org/bot<token>/...).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()  # wartości ze zmiennych środowiskowych
     store: ExpenseStore | None = None
     if settings.sheet_id and settings.google_sa_json:
