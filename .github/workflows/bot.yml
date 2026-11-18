@@ -24,6 +24,9 @@ jobs:
       USERS: ${{ secrets.USERS }}
       SHEET_ID: ${{ secrets.SHEET_ID }}
       GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Opcjonalnie: zmienna repozytorium CLAUDE_MODEL (Settings → Variables), np. claude-haiku-5-5
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-opus-5-5' }}
     steps:
       - name: Sprawdź konfigurację
         id: config

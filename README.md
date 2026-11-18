@@ -31,6 +31,25 @@ Bot Telegram do śledzenia wydatków domowych. Domownicy wrzucają do wspólnej 
 
 Działa też numer kategorii (1–7), pełna nazwa oraz pisownia bez polskich znaków.
 
+## Zdjęcie paragonu
+
+Wyślij zdjęcie paragonu (albo obraz jako plik). Claude odczytuje sklep, datę, sumę, walutę i dzieli sumę na kategorie, np. zakupy spożywcze i koszulka z jednego marketu. W arkuszu powstaje wtedy jeden wiersz na każdą kategorię, wszystkie z tym samym ID.
+
+- **Data:** z paragonu, jeśli jest czytelna i nie starsza niż 60 dni; w przeciwnym razie data wysłania zdjęcia.
+- **Podpis pod zdjęciem nadpisuje odczyt:** `dom` (cała kwota do jednej kategorii), `80 eur` (inna kwota lub waluta). Pozostałe słowa trafiają do opisu.
+- **Nieczytelne zdjęcie:** bot prosi o wpis ręczny.
+
+## Poprawki i raporty
+
+- Pod każdym potwierdzeniem bota są przyciski **Zmień kategorię** (pokazuje 7 kategorii i „Anuluj”) i **Usuń** (usuwa wszystkie wiersze wpisu). Bot działa co kilka minut, więc każde kliknięcie zadziała przy jego następnym uruchomieniu.
+- `/cofnij` usuwa Twój ostatni wpis.
+- `/suma` pokazuje bieżący miesiąc: sumę w zł, kategorie z wykorzystaniem limitów (⚠️ po przekroczeniu) i podział na osoby. Inny miesiąc: `/suma paź`, `/suma 10`, `/suma 2026-10`, `/suma grudzień 2025`.
+
+W arkuszu:
+
+- **`Limity`**: miesięczny limit na kategorię (kolumna B, puste = bez limitu). Używane przez `/suma` i zakładkę `Podsumowanie`.
+- **`Podsumowanie`**: ostatnie 24 miesiące × kategorie (w zł) i „Razem”. Komórka powyżej limitu robi się czerwona. Liczy się sama z formuł.
+
 ## Jak to działa
 
 Nie ma serwera. Co kilka minut GitHub Actions ([`bot.yml`](.github/workflows/bot.yml)) uruchamia `python -m bot`. Skrypt:
@@ -52,10 +71,13 @@ Sekrety repozytorium (*Settings → Secrets and variables → Actions*):
 | `USERS` | JSON `{"<telegram_user_id>": "<imię>"}` |
 | `SHEET_ID` | ID arkusza z adresu `docs.google.com/spreadsheets/d/<ID>/edit` |
 | `GOOGLE_SA_JSON` | cała zawartość pliku klucza konta usługi Google |
+| `ANTHROPIC_API_KEY` | klucz Claude API do odczytu zdjęć paragonów |
 
-Arkusz trzeba udostępnić mailowi konta usługi jako Edytor, a potem raz uruchomić *Actions → Init sheet → Run workflow*. To założy zakładkę `Wydatki` z nagłówkami i formatami.
+Opcjonalna **zmienna** repozytorium `CLAUDE_MODEL` (*Settings → Secrets and variables → Actions → Variables*) wybiera model. Domyślnie `claude-opus-5-5` (najdokładniejszy, rzędu kilku groszy za paragon); `claude-haiku-5-5` jest wielokrotnie tańszy. Zapytanie ma włączony serwerowy fallback, gdy model odmówi odpowiedzi.
 
-Bez pierwszych trzech sekretów workflow bota nic nie robi. Bez `SHEET_ID`/`GOOGLE_SA_JSON` bot odpowiada na komendy, ale wydatków nie zapisuje (i mówi o tym w grupie).
+Arkusz trzeba udostępnić mailowi konta usługi jako Edytor, a potem uruchomić *Actions → Init sheet → Run workflow*. To założy zakładki `Wydatki`, `Limity` i `Podsumowanie`. Ponowne uruchomienie nie nadpisuje danych ani wpisanych limitów, a brakujące zakładki dodaje.
+
+Bez pierwszych trzech sekretów workflow bota nic nie robi. Bez `SHEET_ID`/`GOOGLE_SA_JSON` bot odpowiada na komendy, ale wydatków nie zapisuje (i mówi o tym w grupie). Bez `ANTHROPIC_API_KEY` na zdjęcia odpowiada prośbą o wpis ręczny.
 
 Repo jest publiczne: kod nie zawiera żadnych ID ani imion, a logi pokazują tylko liczniki przetworzonych wiadomości.
 

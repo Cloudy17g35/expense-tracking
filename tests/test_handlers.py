@@ -15,8 +15,8 @@ from tests.fakes import (
 
 
 def test_parse_command() -> None:
-    assert parse_command("/pomoc") == "pomoc"
-    assert parse_command("/Pomoc@MojBot jakis argument") == "pomoc"
+    assert parse_command("/pomoc") == ("pomoc", "")
+    assert parse_command("/Suma@MojBot paź 2026") == ("suma", "paź 2026")
     assert parse_command("45 spo") is None
     assert parse_command("/") is None
 
@@ -86,7 +86,8 @@ def test_manual_expense_is_saved_and_confirmed() -> None:
 
     assert tg.sent[0]["text"] == "✅ Ania · 45,50 zł · Spożywcze i domowe · biedronka"
     assert tg.sent[0]["reply_to"] == 40
-    assert tg.sent[0]["reply_markup"] is None
+    buttons = tg.sent[0]["reply_markup"]["inline_keyboard"][0]
+    assert [b["callback_data"] for b in buttons] == [f"e:{CHAT_ID}-40", f"d:{CHAT_ID}-40"]
 
 
 def test_foreign_currency_is_converted() -> None:
@@ -153,13 +154,9 @@ def test_button_sets_category_and_edits_message() -> None:
     kind = handle_update(callback_update(2, f"k:{CHAT_ID}-10:1"), ctx)
     assert kind == "category_set"
     assert store.rows[0].category == "Spożywcze i domowe"
-    assert tg.edited == [
-        {
-            "chat_id": CHAT_ID,
-            "message_id": 999,
-            "text": "✅ Ania · 45,00 zł · biedronka · Spożywcze i domowe",
-        }
-    ]
+    [edit] = tg.edited
+    assert edit["text"] == "✅ Ania · 45,00 zł · Spożywcze i domowe · biedronka"
+    assert edit["reply_markup"]["inline_keyboard"][0][0]["text"] == "Zmień kategorię"
     assert tg.answered == ["cq2"]
 
 

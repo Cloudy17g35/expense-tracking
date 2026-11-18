@@ -14,3 +14,6 @@ class Settings(BaseSettings):
     # Google Sheets: bez nich bot odpowiada na komendy, ale nie zapisuje wydatków.
     sheet_id: str | None = None
     google_sa_json: SecretStr | None = None
+    # Odczyt zdjęć paragonów: bez klucza bot prosi o wpis ręczny.
+    anthropic_api_key: SecretStr | None = None
+    claude_model: str = "claude-opus-5-5"

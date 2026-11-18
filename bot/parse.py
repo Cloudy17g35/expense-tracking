@@ -34,23 +34,25 @@ def _parse_amount(token: str) -> tuple[Decimal, str | None] | None:
     return amount, CURRENCY_WORDS.get(word)
 
 
-def parse_expense(text: str) -> ParsedExpense | None:
-    """Zwraca wydatek albo None, jeśli wiadomość to zwykła rozmowa.
+@dataclass(frozen=True)
+class Scan:
+    """Wszystko, co udało się rozpoznać w tekście, bez oceny, czy to wydatek."""
 
-    Wiadomość uznajemy za wydatek, gdy zaczyna się od kwoty albo gdy zawiera
-    kwotę i kategorię. Dzięki temu „kupiłem 2 bułki” nie tworzy wpisu.
-    """
-    tokens = text.split()
-    if not tokens or text.startswith("/"):
-        return None
+    amount: Decimal | None
+    currency: str | None
+    category: Category | None
+    description: str
+    starts_with_amount: bool
 
+
+def scan(text: str) -> Scan:
     amount: Decimal | None = None
     currency: str | None = None
     category: Category | None = None
     rest: list[str] = []
     starts_with_amount = False
 
-    for index, token in enumerate(tokens):
+    for index, token in enumerate(text.split()):
         if amount is None and (parsed := _parse_amount(token)):
             amount, token_currency = parsed
             currency = currency or token_currency
@@ -68,13 +70,25 @@ def parse_expense(text: str) -> ParsedExpense | None:
                 continue
         rest.append(token)
 
-    if amount is None or amount <= 0:
+    return Scan(amount, currency, category, " ".join(rest), starts_with_amount)
+
+
+def parse_expense(text: str) -> ParsedExpense | None:
+    """Zwraca wydatek albo None, jeśli wiadomość to zwykła rozmowa.
+
+    Wiadomość uznajemy za wydatek, gdy zaczyna się od kwoty albo gdy zawiera
+    kwotę i kategorię. Dzięki temu „kupiłem 2 bułki” nie tworzy wpisu.
+    """
+    if not text.strip() or text.startswith("/"):
         return None
-    if not starts_with_amount and category is None:
+    found = scan(text)
+    if found.amount is None or found.amount <= 0:
+        return None
+    if not found.starts_with_amount and found.category is None:
         return None
     return ParsedExpense(
-        amount=amount,
-        currency=currency or BASE_CURRENCY,
-        category=category,
-        description=" ".join(rest),
+        amount=found.amount,
+        currency=found.currency or BASE_CURRENCY,
+        category=found.category,
+        description=found.description,
     )

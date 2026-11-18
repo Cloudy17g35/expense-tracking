@@ -10,6 +10,7 @@ from collections import Counter
 from bot.config import Settings
 from bot.fx import NbpRates
 from bot.handlers import Context, handle_update
+from bot.receipt import ClaudeReceiptReader, ReceiptReader
 from bot.sheets import ExpenseStore, GoogleSheetStore
 from bot.telegram import TelegramClient
 
@@ -54,11 +55,19 @@ def main() -> int:
         )
     else:
         log.warning("Brak SHEET_ID / GOOGLE_SA_JSON: wydatki nie będą zapisywane")
+    receipts: ReceiptReader | None = None
+    if settings.anthropic_api_key:
+        receipts = ClaudeReceiptReader(
+            settings.anthropic_api_key.get_secret_value(), settings.claude_model
+        )
+    else:
+        log.warning("Brak ANTHROPIC_API_KEY: zdjęcia paragonów nie będą odczytywane")
     ctx = Context(
         settings=settings,
         tg=TelegramClient(settings.telegram_token.get_secret_value()),
         store=store,
         fx=NbpRates(),
+        receipts=receipts,
     )
     stats = run(ctx)
     # Repo jest publiczne: logujemy tylko liczniki, bez treści wiadomości.
