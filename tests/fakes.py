@@ -102,7 +102,14 @@ class FakeTelegram:
         text: str,
         reply_markup: dict[str, Any] | None = None,
     ) -> None:
-        self.edited.append({"chat_id": chat_id, "message_id": message_id, "text": text})
+        self.edited.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "reply_markup": reply_markup,
+            }
+        )
 
     def download_file(self, file_id: str) -> bytes:
         self.downloaded.append(file_id)
@@ -117,12 +124,24 @@ class FakeTelegram:
 class FakeStore:
     def __init__(self) -> None:
         self.rows: list[ExpenseRow] = []
+        self.limit_values: dict[str, Decimal] = {}
 
     def has_id(self, expense_id: str) -> bool:
         return any(r.expense_id == expense_id for r in self.rows)
 
     def append(self, rows: list[ExpenseRow]) -> None:
         self.rows.extend(rows)
+
+    def all_rows(self) -> list[ExpenseRow]:
+        return list(self.rows)
+
+    def delete(self, expense_id: str) -> int:
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if r.expense_id != expense_id]
+        return before - len(self.rows)
+
+    def limits(self) -> dict[str, Decimal]:
+        return dict(self.limit_values)
 
     def set_category(self, expense_id: str, category: str) -> int:
         count = 0

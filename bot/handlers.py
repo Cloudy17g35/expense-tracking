@@ -15,7 +15,8 @@ from bot.fx import FxError, RateProvider
 from bot.money import BASE_CURRENCY, format_amount, round2
 from bot.parse import ParsedExpense, parse_expense, scan
 from bot.receipt import IMAGE_TYPES, Receipt, ReceiptReader, ReceiptSplit
-from bot.sheets import UNKNOWN_CATEGORY, ExpenseRow, ExpenseStore
+from bot.sheets import UNKNOWN_CATEGORY, ExpenseRow, ExpenseStore, rows_for
+from bot.summary import month_summary, parse_month
 from bot.telegram import TelegramAPI, TelegramError, Update
 
 log = logging.getLogger(__name__)
@@ -25,7 +26,12 @@ SOURCE_MANUAL = "ręcznie"
 SOURCE_PHOTO = "zdjęcie"
 # Data z paragonu jest brana, jeśli nie jest późniejsza niż wiadomość i nie starsza niż tyle dni.
 MAX_RECEIPT_AGE_DAYS = 60
-CALLBACK_CATEGORY = "k"
+
+# Przyciski: <akcja>:<ID wpisu>[:<numer kategorii>]
+CB_SET_CATEGORY = "k"
+CB_CHANGE = "e"
+CB_DELETE = "d"
+CB_CANCEL = "a"
 
 HELP_TEXT = """<b>Jak dodać wydatek</b>
 
@@ -40,17 +46,29 @@ Bez kategorii zapytam przyciskami.
 
 <b>Zdjęcie paragonu:</b> po prostu wyślij zdjęcie. W podpisie możesz wymusić kategorię lub walutę.
 
-<b>Komendy:</b> /suma, /cofnij, /kategorie, /pomoc
+<b>Poprawki:</b> pod każdym wpisem są przyciski „Zmień kategorię” i „Usuń”.
+
+<b>Komendy:</b>
+/suma: wydatki w bieżącym miesiącu (albo np. <code>/suma paź</code>, <code>/suma 2026-10</code>)
+/cofnij: usuwa Twój ostatni wpis
+/kategorie: lista kategorii i skrótów
 
 Bot sprawdza wiadomości co kilka minut, więc odpowiedź może chwilę potrwać."""
 
 NO_SHEET_TEXT = "Arkusz nie jest jeszcze podłączony, więc nie zapisałem tego wydatku."
+NO_SHEET_SHORT = "Arkusz nie jest jeszcze podłączony."
 NO_READER_TEXT = (
     "Odczyt zdjęć nie jest jeszcze włączony. Wpisz wydatek ręcznie, np. <code>123,45 spo</code>."
 )
 UNREADABLE_TEXT = (
     "Nie odczytałem tego paragonu. Wpisz wydatek ręcznie, np. <code>123,45 spo biedronka</code>."
 )
+BAD_MONTH_TEXT = (
+    "Nie rozumiem miesiąca. Przykłady: <code>/suma</code>, <code>/suma paź</code>, "
+    "<code>/suma 2026-10</code>."
+)
+NOTHING_TO_UNDO_TEXT = "Nie masz żadnych wpisów do usunięcia."
+MISSING_ROW_TEXT = "Nie znalazłem tego wpisu w arkuszu (może został już usunięty)."
 
 
 def _now() -> datetime:
@@ -67,6 +85,9 @@ class Context:
     now: Callable[[], datetime] = field(default=_now)
 
 
+# --- teksty i klawiatury ---
+
+
 def categories_text() -> str:
     lines = ["<b>Kategorie</b> (numer albo skrót):"]
     for c in CATEGORIES:
@@ -75,20 +96,74 @@ def categories_text() -> str:
     return "\n".join(lines)
 
 
-def category_keyboard(expense_id: str) -> dict[str, Any]:
+def category_keyboard(expense_id: str, with_cancel: bool = False) -> dict[str, Any]:
     buttons = [
-        {"text": c.name, "callback_data": f"{CALLBACK_CATEGORY}:{expense_id}:{c.number}"}
+        {"text": c.name, "callback_data": f"{CB_SET_CATEGORY}:{expense_id}:{c.number}"}
         for c in CATEGORIES
     ]
-    return {"inline_keyboard": [buttons[i : i + 2] for i in range(0, len(buttons), 2)]}
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    if with_cancel:
+        rows[-1].append({"text": "Anuluj", "callback_data": f"{CB_CANCEL}:{expense_id}"})
+    return {"inline_keyboard": rows}
 
 
-def parse_command(text: str) -> str | None:
-    """'/pomoc@MojBot arg' -> 'pomoc'. Zwraca None, jeśli to nie komenda."""
+def action_keyboard(expense_id: str) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Zmień kategorię", "callback_data": f"{CB_CHANGE}:{expense_id}"},
+                {"text": "Usuń", "callback_data": f"{CB_DELETE}:{expense_id}"},
+            ]
+        ]
+    }
+
+
+def describe(rows: list[ExpenseRow]) -> str:
+    """Opis wpisu (bez znaczka na początku), np. 'Ania · 45,50 zł · Spożywcze… · biedronka'."""
+    first = rows[0]
+    currency = first.currency
+    total = sum((r.amount for r in rows), Decimal(0))
+    amount_text = format_amount(total, currency)
+    if currency != BASE_CURRENCY:
+        total_pln = sum((r.amount_pln for r in rows), Decimal(0))
+        amount_text += f" ({format_amount(total_pln)})"
+
+    if first.source == SOURCE_PHOTO:
+        head = [escape(first.who)]
+        if first.description:
+            head.append(escape(first.description))
+        head += [first.day.strftime("%d.%m"), amount_text]
+        splits = " / ".join(
+            f"{escape(r.category)} {format_amount(r.amount, currency)}" for r in rows
+        )
+        return f"{' · '.join(head)} → {splits}"
+
+    parts = [escape(first.who), amount_text, escape(first.category)]
+    if first.description:
+        parts.append(escape(first.description))
+    return " · ".join(parts)
+
+
+def question_text(row: ExpenseRow) -> str:
+    amount_text = format_amount(row.amount, row.currency)
+    if row.currency != BASE_CURRENCY:
+        amount_text += f" ({format_amount(row.amount_pln)})"
+    parts = [escape(row.who), amount_text]
+    if row.description:
+        parts.append(escape(row.description))
+    return "❓ " + " · ".join(parts) + "\nWybierz kategorię:"
+
+
+def parse_command(text: str) -> tuple[str, str] | None:
+    """'/suma@MojBot paź' -> ('suma', 'paź'). Zwraca None, jeśli to nie komenda."""
     if not text.startswith("/"):
         return None
-    head = text.split(maxsplit=1)[0][1:]
-    return head.split("@", 1)[0].lower() or None
+    head, _, arg = text.partition(" ")
+    name = head[1:].split("@", 1)[0].lower()
+    return (name, arg.strip()) if name else None
+
+
+# --- routing ---
 
 
 def handle_update(update: Update, ctx: Context) -> str:
@@ -105,23 +180,66 @@ def handle_update(update: Update, ctx: Context) -> str:
     user_id = message.get("from", {}).get("id")
     if user_id not in ctx.settings.users:
         return "unknown_user"
+    who = ctx.settings.users[user_id]
 
     if _image_file(message):
-        return _save_receipt(message, ctx.settings.users[user_id], ctx)
+        return _save_receipt(message, who, ctx)
 
     text: str = message.get("text") or ""
-    command = parse_command(text)
-    if command in ("pomoc", "help", "start"):
-        ctx.tg.send_message(chat_id, HELP_TEXT, reply_to=message["message_id"])
-        return "command"
-    if command == "kategorie":
-        ctx.tg.send_message(chat_id, categories_text(), reply_to=message["message_id"])
-        return "command"
+    if command := parse_command(text):
+        return _handle_command(*command, message, who, ctx)
 
     parsed = parse_expense(text)
     if parsed is None:
         return "ignored"
-    return _save_manual_expense(message, parsed, ctx.settings.users[user_id], ctx)
+    return _save_manual_expense(message, parsed, who, ctx)
+
+
+def _handle_command(name: str, arg: str, message: dict[str, Any], who: str, ctx: Context) -> str:
+    chat_id: int = message["chat"]["id"]
+    message_id: int = message["message_id"]
+
+    def reply(text: str) -> None:
+        ctx.tg.send_message(chat_id, text, reply_to=message_id)
+
+    if name in ("pomoc", "help", "start"):
+        reply(HELP_TEXT)
+    elif name == "kategorie":
+        reply(categories_text())
+    elif name == "suma":
+        if ctx.store is None:
+            reply(NO_SHEET_SHORT)
+            return "no_sheet"
+        month = parse_month(arg, ctx.now().date())
+        if month is None:
+            reply(BAD_MONTH_TEXT)
+        else:
+            reply(month_summary(ctx.store.all_rows(), *month, ctx.store.limits()))
+    elif name == "cofnij":
+        if ctx.store is None:
+            reply(NO_SHEET_SHORT)
+            return "no_sheet"
+        return _undo_last(who, reply, ctx.store)
+    else:
+        return "ignored"
+    return "command"
+
+
+def _undo_last(who: str, reply: Callable[[str], None], store: ExpenseStore) -> str:
+    rows = store.all_rows()
+    mine = [r for r in rows if r.who == who]
+    if not mine:
+        reply(NOTHING_TO_UNDO_TEXT)
+        return "command"
+    # Wiersze są w kolejności dopisywania, więc ostatni jest najnowszy.
+    expense_id = mine[-1].expense_id
+    removed = [r for r in rows if r.expense_id == expense_id]
+    store.delete(expense_id)
+    reply(f"🗑 Usunięto: {describe(removed)}")
+    return "undo"
+
+
+# --- wpisy „z palca” ---
 
 
 def _save_manual_expense(
@@ -141,43 +259,40 @@ def _save_manual_expense(
     # Data wydatku to moment wysłania wiadomości, a nie przetworzenia przez bota.
     day = datetime.fromtimestamp(message["date"], TZ).date()
     rate = ctx.fx.rate(parsed.currency, day)
-    amount_pln = round2(parsed.amount * rate)
-    category = parsed.category.name if parsed.category else UNKNOWN_CATEGORY
-
-    ctx.store.append(
-        [
-            ExpenseRow(
-                expense_id=expense_id,
-                day=day,
-                who=who,
-                category=category,
-                description=parsed.description,
-                amount=parsed.amount,
-                currency=parsed.currency,
-                rate=rate,
-                amount_pln=amount_pln,
-                source=SOURCE_MANUAL,
-                added=ctx.now(),
-            )
-        ]
+    row = ExpenseRow(
+        expense_id=expense_id,
+        day=day,
+        who=who,
+        category=parsed.category.name if parsed.category else UNKNOWN_CATEGORY,
+        description=parsed.description,
+        amount=parsed.amount,
+        currency=parsed.currency,
+        rate=rate,
+        amount_pln=round2(parsed.amount * rate),
+        source=SOURCE_MANUAL,
+        added=ctx.now(),
     )
-
-    amount_text = format_amount(parsed.amount, parsed.currency)
-    if parsed.currency != BASE_CURRENCY:
-        amount_text += f" ({format_amount(amount_pln)})"
-    parts = [escape(who), amount_text]
-    parts_tail = [escape(parsed.description)] if parsed.description else []
+    ctx.store.append([row])
 
     if parsed.category is None:
-        text = "❓ " + " · ".join(parts + parts_tail) + "\nWybierz kategorię:"
         ctx.tg.send_message(
-            chat_id, text, reply_to=message_id, reply_markup=category_keyboard(expense_id)
+            chat_id,
+            question_text(row),
+            reply_to=message_id,
+            reply_markup=category_keyboard(expense_id),
         )
         return "expense_needs_category"
 
-    text = "✅ " + " · ".join([*parts, escape(category), *parts_tail])
-    ctx.tg.send_message(chat_id, text, reply_to=message_id)
+    ctx.tg.send_message(
+        chat_id,
+        f"✅ {describe([row])}",
+        reply_to=message_id,
+        reply_markup=action_keyboard(expense_id),
+    )
     return "expense"
+
+
+# --- zdjęcia paragonów ---
 
 
 def _image_file(message: dict[str, Any]) -> tuple[str, str] | None:
@@ -245,21 +360,12 @@ def _save_receipt(message: dict[str, Any], who: str, ctx: Context) -> str:
         for split in receipt.splits
     ]
     ctx.store.append(rows)
-
-    total_text = format_amount(receipt.total, receipt.currency)
-    if receipt.currency != BASE_CURRENCY:
-        total_pln = sum((r.amount_pln for r in rows), Decimal(0))
-        total_text += f" ({format_amount(total_pln)})"
-    split_text = " / ".join(
-        f"{escape(s.category.name)} {format_amount(s.amount, receipt.currency)}"
-        for s in receipt.splits
+    ctx.tg.send_message(
+        chat_id,
+        f"✅ {describe(rows)}",
+        reply_to=message_id,
+        reply_markup=action_keyboard(expense_id),
     )
-    head = [escape(who)]
-    if receipt.merchant:
-        head.append(escape(receipt.merchant))
-    head.append(day.strftime("%d.%m"))
-    text = f"✅ {' · '.join([*head, total_text])} → {split_text}"
-    ctx.tg.send_message(chat_id, text, reply_to=message_id)
     return "receipt"
 
 
@@ -285,6 +391,9 @@ def _apply_caption(receipt: Receipt, caption: str) -> Receipt:
     )
 
 
+# --- przyciski ---
+
+
 def _handle_callback(query: dict[str, Any], ctx: Context) -> str:
     message = query.get("message") or {}
     chat_id = message.get("chat", {}).get("id")
@@ -293,21 +402,59 @@ def _handle_callback(query: dict[str, Any], ctx: Context) -> str:
     if query.get("from", {}).get("id") not in ctx.settings.users:
         return "unknown_user"
 
-    kind, _, rest = (query.get("data") or "").partition(":")
-    expense_id, _, number = rest.rpartition(":")
+    action, _, rest = (query.get("data") or "").partition(":")
+    if action == CB_SET_CATEGORY:
+        expense_id, _, number = rest.rpartition(":")
+    else:
+        expense_id, number = rest, ""
+    if not expense_id or action not in (CB_SET_CATEGORY, CB_CHANGE, CB_DELETE, CB_CANCEL):
+        _answer(ctx, query["id"])
+        return "ignored"
     category = by_number(int(number)) if number.isdigit() else None
-    if kind != CALLBACK_CATEGORY or not expense_id or category is None or ctx.store is None:
+    if (action == CB_SET_CATEGORY and category is None) or ctx.store is None:
         _answer(ctx, query["id"])
         return "ignored"
 
-    updated = ctx.store.set_category(expense_id, category.name)
-    if updated:
-        # Telegram zwraca treść bez znaczników HTML, więc escapujemy ją ponownie.
-        first_line = (message.get("text") or "").split("\n", 1)[0].removeprefix("❓ ")
-        text = f"✅ {escape(first_line)} · {escape(category.name)}"
-        ctx.tg.edit_message_text(chat_id, message["message_id"], text)
-    _answer(ctx, query["id"], category.name if updated else "Nie znalazłem wpisu w arkuszu")
-    return "category_set" if updated else "category_missing_row"
+    message_id: int = message["message_id"]
+
+    def edit(text: str, markup: dict[str, Any] | None = None) -> None:
+        # Arkusz jest już zmieniony; nieudana edycja wiadomości (np. „message is not
+        # modified” po podwójnym kliknięciu albo zbyt stara wiadomość) nie może blokować kolejki.
+        try:
+            ctx.tg.edit_message_text(chat_id, message_id, text, reply_markup=markup)
+        except TelegramError as error:
+            log.info("Nie zmieniono wiadomości bota: %s", error)
+
+    if action == CB_DELETE:
+        rows = rows_for(ctx.store, expense_id)
+        if not rows:
+            edit(MISSING_ROW_TEXT)
+            _answer(ctx, query["id"])
+            return "row_missing"
+        ctx.store.delete(expense_id)
+        edit(f"🗑 Usunięto: {describe(rows)}")
+        _answer(ctx, query["id"], "Usunięto")
+        return "deleted"
+
+    if action == CB_SET_CATEGORY:
+        assert category is not None
+        ctx.store.set_category(expense_id, category.name)
+
+    rows = rows_for(ctx.store, expense_id)
+    if not rows:
+        edit(MISSING_ROW_TEXT)
+        _answer(ctx, query["id"])
+        return "row_missing"
+
+    if action == CB_CHANGE:
+        edit(f"✏️ {describe(rows)}\nWybierz nową kategorię:", category_keyboard(expense_id, True))
+        _answer(ctx, query["id"])
+        return "change_requested"
+
+    # Ustawiona kategoria albo „Anuluj”: zwykłe potwierdzenie z przyciskami.
+    edit(f"✅ {describe(rows)}", action_keyboard(expense_id))
+    _answer(ctx, query["id"], category.name if category else None)
+    return "category_set" if category else "change_cancelled"
 
 
 def _answer(ctx: Context, query_id: str, text: str | None = None) -> None:
