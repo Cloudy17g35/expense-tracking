@@ -22,6 +22,16 @@ class TelegramAPI(Protocol):
         reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None: ...
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None: ...
+
 
 class TelegramClient:
     ALLOWED_UPDATES = ("message", "callback_query")
@@ -69,3 +79,23 @@ class TelegramClient:
             reply_markup=reply_markup,
         )
         return result
+
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        """Zmienia treść wiadomości bota. Bez reply_markup usuwa przyciski."""
+        self._call(
+            "editMessageText",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        self._call("answerCallbackQuery", callback_query_id=callback_query_id, text=text)

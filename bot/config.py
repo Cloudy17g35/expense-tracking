@@ -11,3 +11,6 @@ class Settings(BaseSettings):
     allowed_chat_id: int
     # JSON: {"<telegram_user_id>": "<imię>"}
     users: dict[int, str] = {}
+    # Google Sheets: bez nich bot odpowiada na komendy, ale nie zapisuje wydatków.
+    sheet_id: str | None = None
+    google_sa_json: SecretStr | None = None
