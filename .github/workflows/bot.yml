@@ -1,0 +1,43 @@
+name: Bot
+
+on:
+  schedule:
+    # Co 5 minut (GitHub w praktyce potrafi opóźnić uruchomienie o kilka-kilkanaście minut).
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Nigdy dwa uruchomienia naraz: drugie czeka, aż pierwsze skończy.
+concurrency:
+  group: bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      ALLOWED_CHAT_ID: ${{ secrets.ALLOWED_CHAT_ID }}
+      USERS: ${{ secrets.USERS }}
+    steps:
+      - name: Sprawdź konfigurację
+        id: config
+        run: |
+          if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$ALLOWED_CHAT_ID" ] || [ -z "$USERS" ]; then
+            echo "::notice::Brak sekretów TELEGRAM_TOKEN / ALLOWED_CHAT_ID / USERS - pomijam."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.ready == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.config.outputs.ready == 'true'
+        with:
+          enable-cache: true
+      - name: Uruchom bota
+        if: steps.config.outputs.ready == 'true'
+        run: uv run --locked --no-dev python -m bot

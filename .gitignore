@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Sekrety: nigdy nie commitujemy
+.env
+*service-account*.json
+*-sa.json
