@@ -16,15 +16,18 @@ import gspread
 from gspread.utils import ValueInputOption, ValueRenderOption, rowcol_to_a1
 
 from bot.categories import CATEGORIES
-from bot.sheets import HEADERS, LIMITS_WORKSHEET, SUMMARY_WORKSHEET, WORKSHEET
+from bot.sheets import (
+    HEADERS,
+    LIMITS_WORKSHEET,
+    MONTH,
+    NUMBER,
+    SUMMARY_WORKSHEET,
+    WORKSHEET,
+    column_formats,
+)
 
 log = logging.getLogger(__name__)
 
-NUMBER = {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
-RATE = {"numberFormat": {"type": "NUMBER", "pattern": "0.0000"}}
-DATE = {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}
-MONTH = {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm"}}
-DATETIME = {"numberFormat": {"type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm"}}
 BOLD = {"textFormat": {"bold": True}}
 SUMMARY_MONTHS = 24
 FIRST_MONTH_ROW = 3
@@ -55,15 +58,7 @@ def setup_expenses(spreadsheet: gspread.Spreadsheet) -> None:
     ws.update([HEADERS], "A1")
     ws.freeze(rows=1)
     ws.format(f"A1:{column(len(HEADERS))}1", BOLD)
-    ws.batch_format(
-        [
-            {"range": "B2:B", "format": DATE},
-            {"range": "F2:F", "format": NUMBER},
-            {"range": "H2:H", "format": RATE},
-            {"range": "I2:I", "format": NUMBER},
-            {"range": "K2:K", "format": DATETIME},
-        ]
-    )
+    ws.batch_format(column_formats(2))
 
 
 def setup_limits(spreadsheet: gspread.Spreadsheet) -> None:

@@ -66,3 +66,18 @@ def test_from_values_skips_broken_rows() -> None:
     assert ExpenseRow.from_values([]) is None
     assert ExpenseRow.from_values(["", 46344]) is None
     assert ExpenseRow.from_values(["id", "nie data", "A", "B", "", "1", "PLN", "1", "1"]) is None
+
+
+def test_appended_rows_from_range() -> None:
+    from bot.sheets import appended_rows, column_formats
+
+    assert appended_rows("Wydatki!A5:K6") == (5, 6)
+    assert appended_rows("Wydatki!A12:K12") == (12, 12)
+    assert appended_rows("Wydatki!A7") == (7, 7)
+    assert appended_rows("") is None
+    formats = column_formats(5, 6)
+    assert formats[0] == {
+        "range": "B5:B6",
+        "format": {"numberFormat": {"type": "DATE", "pattern": "dd/mm/yyyy"}},
+    }
+    assert column_formats(2)[0]["range"] == "B2:B"

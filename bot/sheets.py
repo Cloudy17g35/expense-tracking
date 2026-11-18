@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -9,6 +10,7 @@ from typing import Any, Protocol
 
 import gspread
 from gspread.utils import InsertDataOption, ValueInputOption, ValueRenderOption
+from gspread.worksheet import CellFormat
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,31 @@ HEADERS = [
 COL_ID = 1
 COL_CATEGORY = 4
 UNKNOWN_CATEGORY = "❓ do wyboru"
+
+NUMBER = {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}
+RATE = {"numberFormat": {"type": "NUMBER", "pattern": "0.0000"}}
+DATE = {"numberFormat": {"type": "DATE", "pattern": "dd/mm/yyyy"}}
+MONTH = {"numberFormat": {"type": "DATE", "pattern": "mm/yyyy"}}
+DATETIME = {"numberFormat": {"type": "DATE_TIME", "pattern": "dd/mm/yyyy hh:mm"}}
+# Formaty kolumn zakładki Wydatki: (kolumna, format)
+COLUMN_FORMATS = (("B", DATE), ("F", NUMBER), ("H", RATE), ("I", NUMBER), ("K", DATETIME))
+_RANGE_ROWS = re.compile(r"![A-Z]+(\d+)(?::[A-Z]+(\d+))?$")
+
+
+def column_formats(first_row: int, last_row: int | None = None) -> list[CellFormat]:
+    """Formaty kolumn dla wierszy od first_row do last_row (None = do końca arkusza)."""
+    end = "" if last_row is None else str(last_row)
+    return [{"range": f"{col}{first_row}:{col}{end}", "format": fmt} for col, fmt in COLUMN_FORMATS]
+
+
+def appended_rows(updated_range: str) -> tuple[int, int] | None:
+    """'Wydatki!A5:K6' -> (5, 6)."""
+    match = _RANGE_ROWS.search(updated_range)
+    if not match:
+        return None
+    first = int(match[1])
+    return first, int(match[2] or first)
+
 
 # Arkusze liczą daty jako dni od 30.12.1899. Zapisujemy liczby (RAW), żeby nie zależeć
 # od ustawień regionalnych arkusza (przecinek vs kropka, format daty).
@@ -163,12 +190,17 @@ class GoogleSheetStore:
         return bool(self._row_numbers(expense_id))
 
     def append(self, rows: list[ExpenseRow]) -> None:
-        self._ws.append_rows(
+        response = self._ws.append_rows(
             [r.to_values() for r in rows],
             value_input_option=ValueInputOption.raw,
             insert_data_option=InsertDataOption.insert_rows,
             table_range="A1",
         )
+        # Wstawione wiersze nie dziedziczą formatów kolumn, więc bez tego data byłaby
+        # liczbą (np. 46344). Formatujemy dokładnie dopisane wiersze.
+        span = appended_rows(response.get("updates", {}).get("updatedRange", ""))
+        if span:
+            self._ws.batch_format(column_formats(*span))
 
     def set_category(self, expense_id: str, category: str) -> int:
         rows = self._row_numbers(expense_id)
