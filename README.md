@@ -31,6 +31,14 @@ Bot Telegram do śledzenia wydatków domowych. Domownicy wrzucają do wspólnej 
 
 Działa też numer kategorii (1–7), pełna nazwa oraz pisownia bez polskich znaków.
 
+## Zdjęcie paragonu
+
+Wyślij zdjęcie paragonu (albo obraz jako plik). Claude odczytuje sklep, datę, sumę, walutę i dzieli sumę na kategorie, np. zakupy spożywcze i koszulka z jednego marketu. W arkuszu powstaje wtedy jeden wiersz na każdą kategorię, wszystkie z tym samym ID.
+
+- **Data:** z paragonu, jeśli jest czytelna i nie starsza niż 60 dni; w przeciwnym razie data wysłania zdjęcia.
+- **Podpis pod zdjęciem nadpisuje odczyt:** `dom` (cała kwota do jednej kategorii), `80 eur` (inna kwota lub waluta). Pozostałe słowa trafiają do opisu.
+- **Nieczytelne zdjęcie:** bot prosi o wpis ręczny.
+
 ## Jak to działa
 
 Nie ma serwera. Co kilka minut GitHub Actions ([`bot.yml`](.github/workflows/bot.yml)) uruchamia `python -m bot`. Skrypt:
@@ -52,10 +60,13 @@ Sekrety repozytorium (*Settings → Secrets and variables → Actions*):
 | `USERS` | JSON `{"<telegram_user_id>": "<imię>"}` |
 | `SHEET_ID` | ID arkusza z adresu `docs.google.com/spreadsheets/d/<ID>/edit` |
 | `GOOGLE_SA_JSON` | cała zawartość pliku klucza konta usługi Google |
+| `ANTHROPIC_API_KEY` | klucz Claude API do odczytu zdjęć paragonów |
+
+Opcjonalna **zmienna** repozytorium `CLAUDE_MODEL` (*Settings → Secrets and variables → Actions → Variables*) wybiera model. Domyślnie `claude-opus-5-5` (najdokładniejszy, rzędu kilku groszy za paragon); `claude-haiku-5-5` jest wielokrotnie tańszy. Zapytanie ma włączony serwerowy fallback, gdy model odmówi odpowiedzi.
 
 Arkusz trzeba udostępnić mailowi konta usługi jako Edytor, a potem raz uruchomić *Actions → Init sheet → Run workflow*. To założy zakładkę `Wydatki` z nagłówkami i formatami.
 
-Bez pierwszych trzech sekretów workflow bota nic nie robi. Bez `SHEET_ID`/`GOOGLE_SA_JSON` bot odpowiada na komendy, ale wydatków nie zapisuje (i mówi o tym w grupie).
+Bez pierwszych trzech sekretów workflow bota nic nie robi. Bez `SHEET_ID`/`GOOGLE_SA_JSON` bot odpowiada na komendy, ale wydatków nie zapisuje (i mówi o tym w grupie). Bez `ANTHROPIC_API_KEY` na zdjęcia odpowiada prośbą o wpis ręczny.
 
 Repo jest publiczne: kod nie zawiera żadnych ID ani imion, a logi pokazują tylko liczniki przetworzonych wiadomości.
 

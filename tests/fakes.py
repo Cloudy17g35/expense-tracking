@@ -3,8 +3,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
+from bot.categories import by_number
 from bot.config import Settings
 from bot.handlers import TZ, Context
+from bot.receipt import Receipt, ReceiptSplit
 from bot.sheets import ExpenseRow
 from bot.telegram import TelegramError, Update
 
@@ -73,6 +75,7 @@ class FakeTelegram:
         self.answered: list[str] = []
         self.offsets: list[int | None] = []
         self.stale_callbacks = stale_callbacks
+        self.downloaded: list[str] = []
 
     def get_updates(self, offset: int | None) -> list[Update]:
         self.offsets.append(offset)
@@ -100,6 +103,10 @@ class FakeTelegram:
         reply_markup: dict[str, Any] | None = None,
     ) -> None:
         self.edited.append({"chat_id": chat_id, "message_id": message_id, "text": text})
+
+    def download_file(self, file_id: str) -> bytes:
+        self.downloaded.append(file_id)
+        return b"jpeg-bytes"
 
     def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
         if self.stale_callbacks:
@@ -144,13 +151,57 @@ class FakeRates:
 FIXED_NOW = datetime(2026, 11, 18, 10, 5, tzinfo=TZ)
 
 
+def make_receipt(
+    *splits: tuple[int, str],
+    merchant: str = "Biedronka",
+    day: date | None = date(2026, 11, 17),
+    currency: str = "PLN",
+) -> Receipt:
+    parts = tuple(ReceiptSplit(by_number(n), Decimal(a)) for n, a in splits)  # type: ignore[arg-type]
+    return Receipt(
+        merchant=merchant,
+        day=day,
+        total=sum((p.amount for p in parts), Decimal(0)),
+        currency=currency,
+        splits=parts,
+    )
+
+
+class FakeReceipts:
+    def __init__(self, result: Receipt | None) -> None:
+        self.result = result
+        self.calls: list[tuple[bytes, str]] = []
+
+    def read(self, image: bytes, media_type: str) -> Receipt | None:
+        self.calls.append((image, media_type))
+        return self.result
+
+
+def photo_update(update_id: int, caption: str | None = None, date: int = MESSAGE_DATE) -> Update:
+    update = text_update(update_id, "", date=date)
+    message = update["message"]
+    del message["text"]
+    message["photo"] = [
+        {"file_id": "small", "width": 90, "height": 160},
+        {"file_id": "big", "width": 1280, "height": 2560},
+        {"file_id": "mid", "width": 320, "height": 640},
+    ]
+    if caption is not None:
+        message["caption"] = caption
+    return update
+
+
 def make_ctx(
-    tg: FakeTelegram | None = None, store: FakeStore | None = None, with_store: bool = True
+    tg: FakeTelegram | None = None,
+    store: FakeStore | None = None,
+    with_store: bool = True,
+    receipts: FakeReceipts | None = None,
 ) -> Context:
     return Context(
         settings=make_settings(),
         tg=tg or FakeTelegram(),
         store=(store or FakeStore()) if with_store else None,
         fx=FakeRates(),
+        receipts=receipts,
         now=lambda: FIXED_NOW,
     )

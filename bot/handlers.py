@@ -4,15 +4,17 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from bot.categories import CATEGORIES, by_number
 from bot.config import Settings
-from bot.fx import RateProvider
+from bot.fx import FxError, RateProvider
 from bot.money import BASE_CURRENCY, format_amount, round2
-from bot.parse import ParsedExpense, parse_expense
+from bot.parse import ParsedExpense, parse_expense, scan
+from bot.receipt import IMAGE_TYPES, Receipt, ReceiptReader, ReceiptSplit
 from bot.sheets import UNKNOWN_CATEGORY, ExpenseRow, ExpenseStore
 from bot.telegram import TelegramAPI, TelegramError, Update
 
@@ -20,6 +22,9 @@ log = logging.getLogger(__name__)
 
 TZ = ZoneInfo("Europe/Warsaw")
 SOURCE_MANUAL = "ręcznie"
+SOURCE_PHOTO = "zdjęcie"
+# Data z paragonu jest brana, jeśli nie jest późniejsza niż wiadomość i nie starsza niż tyle dni.
+MAX_RECEIPT_AGE_DAYS = 60
 CALLBACK_CATEGORY = "k"
 
 HELP_TEXT = """<b>Jak dodać wydatek</b>
@@ -40,6 +45,12 @@ Bez kategorii zapytam przyciskami.
 Bot sprawdza wiadomości co kilka minut, więc odpowiedź może chwilę potrwać."""
 
 NO_SHEET_TEXT = "Arkusz nie jest jeszcze podłączony, więc nie zapisałem tego wydatku."
+NO_READER_TEXT = (
+    "Odczyt zdjęć nie jest jeszcze włączony. Wpisz wydatek ręcznie, np. <code>123,45 spo</code>."
+)
+UNREADABLE_TEXT = (
+    "Nie odczytałem tego paragonu. Wpisz wydatek ręcznie, np. <code>123,45 spo biedronka</code>."
+)
 
 
 def _now() -> datetime:
@@ -52,6 +63,7 @@ class Context:
     tg: TelegramAPI
     store: ExpenseStore | None
     fx: RateProvider
+    receipts: ReceiptReader | None = None
     now: Callable[[], datetime] = field(default=_now)
 
 
@@ -93,6 +105,9 @@ def handle_update(update: Update, ctx: Context) -> str:
     user_id = message.get("from", {}).get("id")
     if user_id not in ctx.settings.users:
         return "unknown_user"
+
+    if _image_file(message):
+        return _save_receipt(message, ctx.settings.users[user_id], ctx)
 
     text: str = message.get("text") or ""
     command = parse_command(text)
@@ -163,6 +178,111 @@ def _save_manual_expense(
     text = "✅ " + " · ".join([*parts, escape(category), *parts_tail])
     ctx.tg.send_message(chat_id, text, reply_to=message_id)
     return "expense"
+
+
+def _image_file(message: dict[str, Any]) -> tuple[str, str] | None:
+    """(file_id, typ MIME) zdjęcia albo obrazu wysłanego jako plik."""
+    if photos := message.get("photo"):
+        # Telegram podaje kilka rozmiarów; największy jest ostatni. Zdjęcia są w JPEG.
+        largest = max(photos, key=lambda p: p.get("width", 0) * p.get("height", 0))
+        return largest["file_id"], "image/jpeg"
+    document = message.get("document") or {}
+    if document.get("mime_type") in IMAGE_TYPES:
+        return document["file_id"], document["mime_type"]
+    return None
+
+
+def _save_receipt(message: dict[str, Any], who: str, ctx: Context) -> str:
+    chat_id: int = message["chat"]["id"]
+    message_id: int = message["message_id"]
+    if ctx.store is None:
+        ctx.tg.send_message(chat_id, NO_SHEET_TEXT, reply_to=message_id)
+        return "no_sheet"
+    if ctx.receipts is None:
+        ctx.tg.send_message(chat_id, NO_READER_TEXT, reply_to=message_id)
+        return "no_reader"
+
+    expense_id = f"{chat_id}-{message_id}"
+    if ctx.store.has_id(expense_id):
+        return "duplicate"
+
+    image = _image_file(message)
+    assert image is not None
+    file_id, media_type = image
+    receipt = ctx.receipts.read(ctx.tg.download_file(file_id), media_type)
+    if receipt is None:
+        ctx.tg.send_message(chat_id, UNREADABLE_TEXT, reply_to=message_id)
+        return "receipt_unreadable"
+
+    receipt = _apply_caption(receipt, message.get("caption") or "")
+    sent_day = datetime.fromtimestamp(message["date"], TZ).date()
+    day = sent_day
+    if receipt.day and 0 <= (sent_day - receipt.day).days <= MAX_RECEIPT_AGE_DAYS:
+        day = receipt.day
+
+    try:
+        rate = ctx.fx.rate(receipt.currency, day)
+    except FxError:
+        # Nieznana waluta: ponawianie nic nie da.
+        ctx.tg.send_message(chat_id, UNREADABLE_TEXT, reply_to=message_id)
+        return "receipt_unknown_currency"
+
+    added = ctx.now()
+    rows = [
+        ExpenseRow(
+            expense_id=expense_id,
+            day=day,
+            who=who,
+            category=split.category.name,
+            description=receipt.merchant,
+            amount=split.amount,
+            currency=receipt.currency,
+            rate=rate,
+            amount_pln=round2(split.amount * rate),
+            source=SOURCE_PHOTO,
+            added=added,
+        )
+        for split in receipt.splits
+    ]
+    ctx.store.append(rows)
+
+    total_text = format_amount(receipt.total, receipt.currency)
+    if receipt.currency != BASE_CURRENCY:
+        total_pln = sum((r.amount_pln for r in rows), Decimal(0))
+        total_text += f" ({format_amount(total_pln)})"
+    split_text = " / ".join(
+        f"{escape(s.category.name)} {format_amount(s.amount, receipt.currency)}"
+        for s in receipt.splits
+    )
+    head = [escape(who)]
+    if receipt.merchant:
+        head.append(escape(receipt.merchant))
+    head.append(day.strftime("%d.%m"))
+    text = f"✅ {' · '.join([*head, total_text])} → {split_text}"
+    ctx.tg.send_message(chat_id, text, reply_to=message_id)
+    return "receipt"
+
+
+def _apply_caption(receipt: Receipt, caption: str) -> Receipt:
+    """Podpis pod zdjęciem nadpisuje odczyt: kwotę, walutę, kategorię, opis."""
+    if not caption.strip():
+        return receipt
+    found = scan(caption)
+    total = found.amount if found.amount and found.amount > 0 else receipt.total
+    splits = receipt.splits
+    if found.category is not None:
+        splits = (ReceiptSplit(found.category, total),)
+    elif total != receipt.total:
+        # Inna kwota niż odczytana: całość do głównej kategorii z paragonu.
+        splits = (ReceiptSplit(receipt.splits[0].category, total),)
+    merchant = " ".join(p for p in (receipt.merchant, found.description) if p)
+    return Receipt(
+        merchant=merchant,
+        day=receipt.day,
+        total=total,
+        currency=found.currency or receipt.currency,
+        splits=splits,
+    )
 
 
 def _handle_callback(query: dict[str, Any], ctx: Context) -> str:
