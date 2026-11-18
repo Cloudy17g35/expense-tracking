@@ -1,6 +1,7 @@
 """Wydatki w Google Sheets (konto usługi): zakładki `Wydatki` i `Limity`."""
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -8,6 +9,8 @@ from typing import Any, Protocol
 
 import gspread
 from gspread.utils import InsertDataOption, ValueInputOption, ValueRenderOption
+
+log = logging.getLogger(__name__)
 
 WORKSHEET = "Wydatki"
 LIMITS_WORKSHEET = "Limity"
@@ -141,7 +144,16 @@ class GoogleSheetStore:
     @classmethod
     def connect(cls, service_account_json: str, sheet_id: str) -> "GoogleSheetStore":
         client = gspread.service_account_from_dict(json.loads(service_account_json))
-        return cls(client.open_by_key(sheet_id))
+        spreadsheet = client.open_by_key(sheet_id)
+        try:
+            return cls(spreadsheet)
+        except gspread.exceptions.WorksheetNotFound:
+            # Świeży arkusz bez uruchomionego „Init sheet”: zakładamy zakładki sami.
+            from bot.sheet_setup import setup_all
+
+            log.warning("Brak zakładki %s, zakładam zakładki arkusza", WORKSHEET)
+            setup_all(spreadsheet)
+            return cls(spreadsheet)
 
     def _row_numbers(self, expense_id: str) -> list[int]:
         ids = self._ws.col_values(COL_ID)
