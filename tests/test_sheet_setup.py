@@ -19,3 +19,11 @@ def test_summary_layout() -> None:
         'Wydatki!$B:$B,">="&$A3,Wydatki!$B:$B,"<"&EDATE($A3,1))'
     )
     assert rows[-1][-1].startswith("=SUMIFS(Wydatki!$I:$I,Wydatki!$B:$B")
+
+
+def test_semicolon_variant_for_comma_decimal_locales() -> None:
+    rows = summary_rows(";")
+    assert rows[0][1] == "Spożywcze i domowe"
+    assert rows[1][1] == '=IFERROR(1/(1/VLOOKUP(B$1;Limity!$A:$B;2;FALSE));"")'
+    assert rows[3][0] == "=EDATE(A3;-1)"
+    assert "," not in "".join(v for row in rows for v in row if v.startswith("="))

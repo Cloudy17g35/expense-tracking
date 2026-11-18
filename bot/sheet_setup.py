@@ -80,8 +80,12 @@ def setup_limits(spreadsheet: gspread.Spreadsheet) -> None:
     log.info("Dodano zakładkę %s: limity wpisuje się w kolumnie B.", LIMITS_WORKSHEET)
 
 
-def summary_rows() -> list[list[Any]]:
-    """Nagłówek, wiersz limitów i 24 miesiące z formułami (notacja angielska API Arkuszy)."""
+def summary_rows(sep: str = ",") -> list[list[Any]]:
+    """Nagłówek, wiersz limitów i 24 miesiące z formułami.
+
+    `sep` to separator argumentów: formuły są parsowane jak wpisane ręcznie, więc w arkuszu
+    z polskimi ustawieniami regionalnymi (przecinek dziesiętny) separatorem jest średnik.
+    """
     names = [c.name for c in CATEGORIES]
     header: list[Any] = ["Miesiąc", *names, "Razem"]
     # 1/(1/x) zamienia pusty limit (0) na błąd, a ten IFERROR na pusty tekst. Dzięki temu
@@ -108,7 +112,16 @@ def summary_rows() -> list[list[Any]]:
             cells.append(f"=SUMIFS({amounts},{categories},{col}$1,{in_month})")
         cells.append(f"=SUMIFS({amounts},{in_month})")
         rows.append(cells)
+    if sep != ",":
+        # W formułach nie ma przecinków dziesiętnych ani w tekstach, więc zamiana jest bezpieczna.
+        rows = [[_with_separator(v, sep) for v in row] for row in rows]
     return rows
+
+
+def _with_separator(value: Any, sep: str) -> Any:
+    if isinstance(value, str) and value.startswith("="):
+        return value.replace(",", sep)
+    return value
 
 
 def setup_summary(spreadsheet: gspread.Spreadsheet) -> None:
@@ -121,6 +134,9 @@ def setup_summary(spreadsheet: gspread.Spreadsheet) -> None:
 
     ws = spreadsheet.add_worksheet(SUMMARY_WORKSHEET, rows=last_row + 2, cols=width)
     ws.update(rows, "A1", value_input_option=ValueInputOption.user_entered)
+    if _formula_errors(ws, last_row, total_col):
+        log.info("Formuły z przecinkami nie działają w tym arkuszu, używam średników.")
+        ws.update(summary_rows(";"), "A1", value_input_option=ValueInputOption.user_entered)
     ws.freeze(rows=2, cols=1)
     ws.format(f"A1:{total_col}2", BOLD)
     ws.format(f"A{FIRST_MONTH_ROW}:A{last_row}", MONTH)
@@ -160,24 +176,23 @@ def setup_summary(spreadsheet: gspread.Spreadsheet) -> None:
             ]
         }
     )
-    _check_formulas(ws, last_row, total_col)
+    if errors := _formula_errors(ws, last_row, total_col):
+        raise RuntimeError(f"Formuły w {SUMMARY_WORKSHEET} zwracają błędy: {errors[:5]}")
+    log.info("Formuły w %s liczą się poprawnie.", SUMMARY_WORKSHEET)
     log.info("Zakładka %s wygenerowana (%d miesięcy).", SUMMARY_WORKSHEET, SUMMARY_MONTHS)
 
 
-def _check_formulas(ws: gspread.Worksheet, last_row: int, total_col: str) -> None:
-    """Sprawdza, czy formuły się liczą. Loguje tylko adresy błędów, bez kwot (repo publiczne)."""
+def _formula_errors(ws: gspread.Worksheet, last_row: int, total_col: str) -> list[str]:
+    """Adresy komórek z błędem formuły. Bez kwot w logach (repo publiczne)."""
     values = ws.get_values(
         f"A2:{total_col}{last_row}", value_render_option=ValueRenderOption.formatted
     )
-    errors = [
+    return [
         f"{column(c + 1)}{r + 2}={v}"
         for r, row in enumerate(values)
         for c, v in enumerate(row)
         if isinstance(v, str) and v.startswith("#")
     ]
-    if errors:
-        raise RuntimeError(f"Formuły w {SUMMARY_WORKSHEET} zwracają błędy: {errors[:5]}")
-    log.info("Formuły w %s liczą się poprawnie.", SUMMARY_WORKSHEET)
 
 
 def setup_all(spreadsheet: gspread.Spreadsheet) -> None:
