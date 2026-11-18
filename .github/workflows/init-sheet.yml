@@ -1,0 +1,29 @@
+name: Init sheet
+
+# Ręcznie: Actions → Init sheet → Run workflow.
+# Zakłada zakładkę `Wydatki`, nagłówki i formaty kolumn. Można uruchamiać wielokrotnie.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SA_JSON }}
+    steps:
+      - name: Sprawdź konfigurację
+        run: |
+          if [ -z "$SHEET_ID" ] || [ -z "$GOOGLE_SA_JSON" ]; then
+            echo "::error::Ustaw sekrety SHEET_ID i GOOGLE_SA_JSON."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run --locked --no-dev python scripts/init_sheet.py

@@ -22,12 +22,25 @@ class TelegramAPI(Protocol):
         reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None: ...
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None: ...
+
+    def download_file(self, file_id: str) -> bytes: ...
+
 
 class TelegramClient:
     ALLOWED_UPDATES = ("message", "callback_query")
 
     def __init__(self, token: str, http: httpx.Client | None = None) -> None:
         self._base = f"https://api.telegram.org/bot{token}"
+        self._file_base = f"https://api.telegram.org/file/bot{token}"
         self._http = http or httpx.Client(timeout=30)
 
     def _call(self, method: str, **params: Any) -> Any:
@@ -69,3 +82,31 @@ class TelegramClient:
             reply_markup=reply_markup,
         )
         return result
+
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        """Zmienia treść wiadomości bota. Bez reply_markup usuwa przyciski."""
+        self._call(
+            "editMessageText",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        self._call("answerCallbackQuery", callback_query_id=callback_query_id, text=text)
+
+    def download_file(self, file_id: str) -> bytes:
+        """Pobiera plik (np. zdjęcie). Boty mogą pobierać pliki do 20 MB."""
+        info = self._call("getFile", file_id=file_id)
+        response = self._http.get(f"{self._file_base}/{info['file_path']}")
+        if response.status_code != 200:
+            raise TelegramError(f"download: HTTP {response.status_code}")
+        return response.content
